@@ -1,0 +1,365 @@
+<html>
+<head>
+  <meta charset="utf-8">
+  <link href="lib/rangeslider.css" rel="stylesheet">
+  <link href="lib/tether.min.css" rel="stylesheet">
+  <link href="lib/bootstrap.min.css" rel="stylesheet">
+  <script src="lib/jquery.min.js"></script>
+  <script src="lib/tether.min.js"></script>
+  <script src="lib/bootstrap.min.js"></script>
+  <script src="lib/highcharts.js"></script>
+  <script src="lib/rangeslider.min.js"></script>
+  <script src="lib/scrollfix.js"></script>
+  <style>
+    .scrollFixBaseClassName {
+      background-color: white;
+    }
+  </style>
+</head>
+
+<body>
+<div class="container">
+  <div>
+    <h2>Parzen窗原理</h2>
+    <p>KNN必须确定K个近邻，均匀核函数Parzen窗先确定区间，再数个数</p>
+    <p>
+      均匀核函数相当于先确定窗口大小的近邻估计方法：先确定区间，统计区间内的大多数。
+    </p>
+    <p>
+      Parzen窗效率也可以使用KD树来提高，对于均匀核函数非常适合用KD树；对于高斯核函数，因为99%的数据都集中在中央范围内，所以可以只考虑这一部分数据而不考虑更远处的数据。<br>
+      这是一种牺牲准确率换取时间效率的方式。
+    </p>
+    <p>
+      K近邻如何让K个近邻投票？也可以吸收Parzen窗中越远话语权越低的方法。始终让K个人投票，只是距离越远投票权越低，这就跟上面Parzen窗思想很像了。
+    </p>
+    <p>Parzen窗向KNN靠近（确定区间）可以提高时间效率，KNN向Parzen窗靠近可以提高准确率。二者折中产生的算法差不多。</p>
+    <p>Parzen窗和K近邻思路相近，都是基于数据本身进行预测，不对整体分布作假设，这样才称得上是非参数估计。</p>
+    <p>任何一种模型肯定需要参数，否则这个模型本身就是一个参数。Parzen窗中距离的计算、核函数的选取、窗口大小的确定就是参数。KNN中距离的计算、投票权值的计算、K值的选取就是参数。窗口大小与K值对应、核函数选取与投票方式对应，KNN跟Parzen窗是一对孪生兄弟。</p>
+  </div>
+  <div>
+    <h2>数据说明</h2>
+    <p>在一维空间中，有如下数据集:</p>
+    <table class="table table-striped">
+      <thead>
+      <tr>
+        <th>类别</th>
+        <th>属性</th>
+      </tr>
+      </thead>
+      <tbody id="sample">
+      </tbody>
+    </table>
+    <p>每个样本点有一个属性，属性取值范围为[0,10]。五个样本点，两种类别，求两种类别在[0,10]区间的概率密度曲线。
+    </p>
+  </div>
+  <hr>
+
+  <h2>控制台</h2>
+  <div id="myconsole">
+    <div style="margin-bottom: 20px;">
+      <p>窗口大小：
+        <output></output>
+      </p>
+      <input type="range" min="0" max="10" step="0.1" value="2" data-rangeslider>
+    </div>
+    <button class="btn btn-primary" id="showClass1">只显示类别1</button>
+    <button class="btn btn-primary" id="showClass2">只显示类别2</button>
+    <button class="btn btn-primary" id="showOnlyClass">只显示类密度曲线</button>
+  </div>
+
+  <div>
+    <div id="uniform_container" style="min-width: 400px;height: 400px"></div>
+    <div id="gauss_container" style="min-width: 400px;height: 400px"></div>
+    <div id="zhishu_container" style="min-width: 400px;height: 400px"></div>
+  </div>
+</div>
+<script>
+
+  //第一列表示类别，第二列表示属性
+  var data = [
+    [1, 1],
+    [1, 3],
+    [2, 4],
+    [1, 5],
+    [2, 8],
+    [2, 9]
+  ];
+
+  var h = 2; //窗口大小
+  var step = 0.1;//横坐标步长为0.1
+  var uniform_chart, gauss_chart, zhishu_chart;//三个表格
+  var class1Series = [], class2Series = [], classSeries = [];//三种y线
+  var firstTime = true;//用于记录是否是第一次运行
+  //将数据按照类别分开
+  var a = function () {
+    var ans = {}
+    data.forEach(function (x) {
+      if (ans[x[0]] == null)ans[x[0]] = []
+      ans[x[0]].push(x.slice(1))
+    })
+    return ans;
+  }();
+  //横坐标
+  var categories = function () {
+    var ans = [];
+    var cnt = 10 / step;
+    for (var i = 0; i <= cnt; i++) {
+      ans.push(i * step);
+    }
+    return ans;
+  }();
+  //向量的无穷范数
+  function norm_max(vector) {
+    var s = 0;
+    vector.forEach(function (x) {
+      s = Math.max(s, Math.abs(x));
+    })
+    return s;
+  }
+  //向量的二范数
+  function norm2(vector) {
+    var s = 0;
+    vector.forEach(function (x) {
+      s += Math.pow(x, 2);
+    })
+    return Math.pow(s, 0.5);
+  }
+  //高斯核函数
+  function kernel_gauss(x, h) {
+    return Math.exp(-x * x / (2 * h * h)) / Math.pow(Math.PI * 2, 0.5) / h;
+  }
+  //均匀核函数
+  function kernel_uniform(x, h, dim) {
+    return x / h <= 0.5 ? 1 / Math.pow(h, dim) : 0;
+  }
+  //指数核函数
+  function kernel_zhishu(x, h) {
+    return Math.exp(-x / h) / h;
+  }
+  //向量的减法
+  function sub(x, y) {
+    var ans = [];
+    for (var i = 0; i < x.length; i++) {
+      ans.push(x[i] - y[i]);
+    }
+    return ans;
+  }
+  //基于高斯核对测试样本进行概率预测
+  function gauss(test_sample, train_data) {
+    var s = 0;
+    for (var i = 0; i < train_data.length; i++) {
+      s += kernel_gauss(norm2(sub(test_sample, train_data[i])), h)
+    }
+    return s;
+  }
+  //基于均匀核函数对测试样本进行概率预测
+  function uniform(test_sample, train_data) {
+    var s = 0;
+    train_data.forEach(function (train_sample) {
+      s += kernel_uniform(norm_max(sub(test_sample, train_sample)), h, test_sample.length)
+    })
+    return s;
+  }
+  //基于指数核函数对测试样本进行概率预测
+  function zhishu(test_sample, train_data) {
+    var s = 0;
+    train_data.forEach(function (train_sample) {
+      s += kernel_zhishu(norm2(sub(test_sample, train_sample)), h)
+    })
+    return s;
+  }
+  //初始化三个series，用来控制显示哪些曲线，不显示哪些曲线
+  // 此函数必须与getSeries顺序一致才行
+  function initSeriesId() {
+    var index = 0;
+    data.forEach(function (x) {
+      if (x[0] == 1) {
+        class1Series.push(index)
+      } else {
+        class2Series.push(index)
+      }
+      index += 1;
+    })
+    //类别1的密度曲线
+    class1Series.push(index)
+    classSeries.push(index++)
+    //类别2的密度曲线
+    class2Series.push(index)
+    classSeries.push(index++)
+  }
+  //使用p方法来预测概率，生成series
+  function getSeries(p) {
+    var ans = []
+    //每一个点形成的概率
+    for (var i in data) {
+      var y = []
+      for (var j in categories) {
+        y.push(p([categories[j]], [data[i].slice(1)]))
+      }
+      ans.push({
+        name: '类别=' + data[i][0] + "  属性=" + data[i][1],
+        data: y
+      })
+    }
+    for (var i in a) {
+      var y = []
+      for (var j in categories) {
+        y.push(p([categories[j]], a[i]))
+      }
+      ans.push({
+        name: '类别' + i,
+        data: y
+      })
+    }
+    return ans
+  }
+  //渲染图表
+  function render(id, title, categories, series) {
+    return new Highcharts.Chart(id, {
+      chart: {
+        type: 'areaspline'
+      },
+      title: {
+        text: title
+      },
+      legend: {
+        layout: 'vertical',
+        align: 'right',
+        verticalAlign: 'top',
+//        x: 150,
+//        y: 100,
+        floating: true,
+        borderWidth: 1,
+//        backgroundColor: (Highcharts.theme && Highcharts.theme.legendBackgroundColor) || '#FFFFFF'
+      },
+
+      xAxis: {
+        categories: categories,
+        labels: {
+          step: parseInt(categories.length / 10),
+          staggerLines: 1
+        }
+      },
+      yAxis: {
+        title: {
+          text: '概率密度'
+        }
+      },
+      series: series,
+      tooltip: {
+        enabled: false
+      },
+      credits: {
+        enabled: false
+      },
+      plotOptions: {
+        series: {
+          allowPointSelect: false,
+          marker: {
+            enabled: false
+          }
+        },
+        areaspline: {
+          fillOpacity: 0.3
+        }
+      }
+    });
+  }
+  //更新图表
+  function update_graph() {
+    uniform_chart = render("uniform_container",
+            "Parzen窗概率密度估计之均匀核函数",
+            categories, getSeries(uniform));
+    gauss_chart = render("gauss_container",
+            "Parzen窗概率密度估计之高斯核函数",
+            categories, getSeries(gauss));
+    zhishu_chart = render("zhishu_container",
+            "Parzen窗概率密度估计之指数核函数",
+            categories, getSeries(zhishu));
+    if (!firstTime) {
+      $('.btn-primary').click()
+    } else {
+      firstTime = false;
+    }
+    console.log("update_graph over");
+  }
+  function initTable() {
+    data.forEach(function (x) {
+      $("#sample").append($("<tr><td>" + x[0] + "</td><td>" + x[1] + "</td></tr>"));
+    });
+  }
+  function init() {
+    initTable();
+    initSeriesId();
+    $("#myconsole").scrollFix({
+      zIndex: 1000,
+      baseClassName: 'scrollFixBaseClassName'
+    });
+    //为每一个按钮绑定事件
+    [{
+      button: $('#showClass1'),
+      series: class1Series
+    }, {
+      button: $('#showClass2'),
+      series: class2Series
+    }, {
+      button: $('#showOnlyClass'),
+      series: classSeries
+    }].forEach(function (x) {
+      x.button.click(function () {
+        $(".btn").removeClass("btn-primary");
+        x.button.addClass('btn-primary');
+        [uniform_chart, gauss_chart, zhishu_chart].forEach(function (chart) {
+          var ind = 0;
+          var series = chart.series;
+          var show_series = x.series;
+          for (var i = 0; i < series.length; i++) {
+            if (ind < show_series.length && i == show_series[ind]) {
+              ind++;
+              if (series[i].visible == false) {
+                series[i].show()
+              }
+            } else {
+              if (series[i].visible)
+                series[i].hide()
+            }
+          }
+        })
+      })
+    })
+  }
+  $(function () {
+    init();
+    var $document = $(document);
+    var selector = '[data-rangeslider]';
+    var $inputRange = $(selector);
+
+    // Example functionality to demonstrate a value feedback
+    // and change the output's value.
+    function valueOutput(element) {
+      var value = element.value;
+      var output = element.parentNode.getElementsByTagName('output')[0];
+
+      output.innerHTML = value;
+      h = value;
+      update_graph();
+    }
+
+    // Initial value output
+    for (var i = $inputRange.length - 1; i >= 0; i--) {
+      valueOutput($inputRange[i]);
+    }
+
+    // Update value output
+    $document.on('input', selector, function (e) {
+      valueOutput(e.target);
+    });
+
+    // Initialize the elements
+    $inputRange.rangeslider({
+      polyfill: false
+    });
+  });
+</script>
+</body>
+</html>
